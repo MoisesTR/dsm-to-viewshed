@@ -6,7 +6,7 @@ from rasterio.features import shapes
 from pyproj import Transformer, CRS
 from subprocess import run, CalledProcessError, PIPE
 
-def calculate_los(dsm_path, lng, lat, equipment_height_ft):
+def calculate_los(dsm_path, lng, lat, equipment_height_ft, max_distance):
     """
     Calculate line of sight from an observer point using GDAL viewshed.
     
@@ -36,7 +36,6 @@ def calculate_los(dsm_path, lng, lat, equipment_height_ft):
                 print("Warning: DSM might not be in US feet", file=sys.stderr)
             
             # Set max distance in DSM units
-            max_distance = 500    # feet radius (about 0.19 miles)
             if not is_feet:
                 # Convert feet to meters if DSM is in meters
                 max_distance = max_distance * 0.3048
@@ -185,8 +184,8 @@ def calculate_los(dsm_path, lng, lat, equipment_height_ft):
         return None
 
 if __name__ == "__main__":
-    if len(sys.argv) != 5:  # Script name + 4 arguments = 5 total
-        print("Usage: python process_dsm.py <dsm_path> <longitude> <latitude> <height_ft>", file=sys.stderr)
+    if len(sys.argv) != 6:  # Script name + 5 arguments = 6 total
+        print("Usage: python process_dsm.py <dsm_path> <longitude> <latitude> <height_ft> <max_distance>", file=sys.stderr)
         sys.exit(1)
     
     try:
@@ -194,8 +193,9 @@ if __name__ == "__main__":
         longitude = float(sys.argv[2])
         latitude = float(sys.argv[3])
         height_ft = float(sys.argv[4])
+        max_distance = float(sys.argv[5])   
         
-        result = calculate_los(dsm_path, longitude, latitude, height_ft)
+        result = calculate_los(dsm_path, longitude, latitude, height_ft, max_distance)
     except ValueError as e:
         print(f"Error: Invalid number format - {str(e)}", file=sys.stderr)
         sys.exit(1)

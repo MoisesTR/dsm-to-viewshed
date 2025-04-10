@@ -11,9 +11,10 @@ export interface RunPythonViewshedParams {
 }
 
 const DSM_PATH = 'uploads/usgs_l_lasda.tif';
+const DEFAULT_MAX_DISTANCE = 500;
 @Injectable()
 export class AppService {
-  async runPythonViewshed({ lng, lat, mountHeightFt }: RunPythonViewshedParams): Promise<ViewshedResponse> {
+  async runPythonViewshed({ lng, lat, mountHeightFt, maxDistance }: RunPythonViewshedParams): Promise<ViewshedResponse> {
     if (!existsSync(DSM_PATH)) {
       throw new BadRequestException(`DSM file not found: ${DSM_PATH}`);
     }
@@ -36,7 +37,8 @@ export class AppService {
         DSM_PATH,
         lng.toString(),
         lat.toString(),
-        mountHeightFt.toString()
+        mountHeightFt.toString(),
+        maxDistance?.toString() || DEFAULT_MAX_DISTANCE.toString()
       ]);
 
       let stdoutData = '';
