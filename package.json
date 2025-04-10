@@ -1,8 +1,8 @@
 {
   "name": "dms-to-viewshed",
   "version": "0.0.1",
-  "description": "",
-  "author": "",
+  "description": "DSM to Viewshed",
+  "author": "Moises Trigueros",
   "private": true,
   "license": "UNLICENSED",
   "scripts": {

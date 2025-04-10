@@ -3,15 +3,27 @@ import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { ViewshedResponse } from './dto/viewshed.dto';
 
+export interface RunPythonViewshedParams {
+  lng: number;
+  lat: number;
+  mountHeightFt: number;
+  maxDistance?: number;
+}
+
+const DSM_PATH = 'uploads/usgs_l_lasda.tif';
 @Injectable()
 export class AppService {
-  async runPythonViewshed(dsmPath: string, lng: number, lat: number): Promise<ViewshedResponse> {
-    if (!existsSync(dsmPath)) {
-      throw new BadRequestException(`DSM file not found: ${dsmPath}`);
+  async runPythonViewshed({ lng, lat, mountHeightFt }: RunPythonViewshedParams): Promise<ViewshedResponse> {
+    if (!existsSync(DSM_PATH)) {
+      throw new BadRequestException(`DSM file not found: ${DSM_PATH}`);
     }
 
     if (lng < -180 || lng > 180 || lat < -90 || lat > 90) {
       throw new BadRequestException('Invalid longitude or latitude values');
+    }
+
+    if (!mountHeightFt) {
+      throw new BadRequestException('Mount height is required');
     }
 
     console.log(`============================================`);
@@ -21,9 +33,10 @@ export class AppService {
     return new Promise<ViewshedResponse>((resolve, reject) => {
       const pythonProcess = spawn('python3', [
         './process_dsm.py',
-        dsmPath,
+        DSM_PATH,
         lng.toString(),
-        lat.toString()
+        lat.toString(),
+        mountHeightFt.toString()
       ]);
 
       let stdoutData = '';
@@ -47,16 +60,12 @@ export class AppService {
         }
 
         try {
-          // Get the last non-empty line as JSON output
-          const outputLines = stdoutData.split('\n').filter(line => line.trim() !== '');
-          const jsonLine = outputLines[outputLines.length - 1];
-
-          if (!jsonLine) {
+          const lastLine = stdoutData.trim().split('\n').pop();
+          if (!lastLine) {
             throw new Error('Empty response from Python script');
           }
 
-          // Parse and validate the GeoJSON
-          const result = JSON.parse(jsonLine);
+          const result = JSON.parse(lastLine);
           if (result.type !== 'FeatureCollection' || !Array.isArray(result.features)) {
             throw new Error('Invalid GeoJSON format');
           }
@@ -64,12 +73,11 @@ export class AppService {
           resolve(result as ViewshedResponse);
         } catch (e) {
           console.error('Failed to parse Python output:', e);
-          console.error('Raw output:', stdoutData.substring(0, 100));
+          console.error('Raw output:', stdoutData);
           reject(new InternalServerErrorException(`Invalid viewshed format: ${e.message}`));
         }
       });
 
-      // Handle process errors
       pythonProcess.on('error', (err) => {
         console.error('Failed to start Python process:', err);
         reject(new InternalServerErrorException('Failed to start viewshed calculation'));

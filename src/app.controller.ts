@@ -6,6 +6,8 @@ import { ViewshedResponse } from './dto/viewshed.dto';
 interface ViewshedRequest {
   lng: number;
   lat: number;
+  mountHeightFt: number;
+  maxDistance?: number;
 }
 
 @Controller()
@@ -17,14 +19,9 @@ export class AppController {
     @Body() body: ViewshedRequest,
     @Res() reply: FastifyReply,
   ): Promise<void> {
-    const dsmPath = 'uploads/usgs_l_lasda.tif';
     try {
-      const { lng, lat } = body;
-      const geojson: ViewshedResponse = await this.appService.runPythonViewshed(
-        dsmPath,
-        lng,
-        lat
-      );
+      console.log(body);
+      const geojson: ViewshedResponse = await this.appService.runPythonViewshed(body);
 
       reply.send(geojson);
     } catch (error) {

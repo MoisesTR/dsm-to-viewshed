@@ -6,17 +6,20 @@ from rasterio.features import shapes
 from pyproj import Transformer, CRS
 from subprocess import run, CalledProcessError, PIPE
 
-def calculate_los(dsm_path, lng, lat):
+def calculate_los(dsm_path, lng, lat, equipment_height_ft):
     """
     Calculate line of sight from an observer point using GDAL viewshed.
     
     Args:
         dsm_path: Path to the Digital Surface Model (DSM) file
-        lng: Observer longitude
-        lat: Observer latitude
+        lng: Observer longitude in WGS84
+        lat: Observer latitude in WGS84
+        equipment_height_ft: Height of equipment above ground in feet
         
     Returns:
-        GeoJSON FeatureCollection of visible areas
+        GeoJSON FeatureCollection containing:
+        - MultiPolygon of visible areas
+        - Point feature of observer location with elevation metadata
     """
     try:
         # Create temporary file for viewshed output
@@ -38,24 +41,45 @@ def calculate_los(dsm_path, lng, lat):
                 # Convert feet to meters if DSM is in meters
                 max_distance = max_distance * 0.3048
             
-            # Convert lat/lng to DSM coordinates
+            # Convert WGS84 lat/lng to DSM coordinate system
             transformer = Transformer.from_crs(CRS("EPSG:4326"), dsm.crs, always_xy=True)
-            obs_x, obs_y = transformer.transform(float(lng), float(lat))
+            observer_x, observer_y = transformer.transform(float(lng), float(lat))
             
-            # Get elevation directly from DSM (already includes ground/roof height)
-            obs_height = next(dsm.sample([(obs_x, obs_y)]))[0]
-            if obs_height is None:
-                print("Error: Could not get elevation", file=sys.stderr)
+            # Get surface elevation from DSM at observer point (includes buildings)
+            surface_elevation = next(dsm.sample([(observer_x, observer_y)]))[0]
+            if surface_elevation is None:
+                print("Error: Could not get surface elevation from DSM", file=sys.stderr)
                 return None
             
-            print(f"Observer elevation from DSM: {obs_height:.1f}{'ft' if is_feet else 'm'}", file=sys.stderr)
+            # Calculate total height by adding equipment height to surface elevation
+            equipment_height = float(equipment_height_ft)
+            if not is_feet:
+                equipment_height = equipment_height * 0.3048  # Convert to meters if needed
             
-            # Run GDAL viewshed in NORMAL mode (default)
-            # Output will be Byte type where:
-            # 0 = not visible (out of sight)
-            # 1 = visible
-            observer_offset = 6  # Negative of surface height to get to zero
-            cmd = f"gdal_viewshed -ox {obs_x} -oy {obs_y} -oz {observer_offset} -md {max_distance} {dsm_path} {viewshed_path}"
+            total_height = surface_elevation + equipment_height
+            
+            print(f"Surface elevation from DSM: {surface_elevation:.1f}{'ft' if is_feet else 'm'}", file=sys.stderr)
+            print(f"Equipment height above surface: {equipment_height:.1f}{'ft' if is_feet else 'm'}", file=sys.stderr)
+            print(f"Total height for visibility: {total_height:.1f}{'ft' if is_feet else 'm'}", file=sys.stderr)
+            
+            # GDAL viewshed parameters explanation:
+            # -ox: Observer X coordinate in the DSM's coordinate system
+            # -oy: Observer Y coordinate in the DSM's coordinate system
+            # -oz: Height above ground to calculate visibility from
+            #      (we use total height for visibility)
+            # -md: Maximum distance to calculate visibility (in DSM units)
+            # Additional optional parameters (not used here):
+            # -vv: Vertical angle of vision in degrees (default is 180)
+            # -b: Input band to use (default is 1)
+            # -a: Algorithm (default=NORMAL):
+            #     NORMAL = Visible/Not visible binary output
+            #     INTERPOLATE = Account for earth curvature
+            #
+            # Note: We don't use -ov (observer height) as it would add extra height
+            # on top of -oz. Instead, we directly specify the desired height with -oz.
+            
+            # Use total height for viewshed calculation
+            cmd = f"gdal_viewshed -ox {observer_x} -oy {observer_y} -oz {total_height} -md {max_distance} {dsm_path} {viewshed_path}"
             print(f"Running: {cmd}", file=sys.stderr)
             
             try:
@@ -91,32 +115,23 @@ def calculate_los(dsm_path, lng, lat):
                 
                 # Add observer point as a feature
                 transformer_back = Transformer.from_crs(dsm.crs, CRS("EPSG:4326"), always_xy=True)
-                obs_lng, obs_lat = transformer_back.transform(obs_x, obs_y)
+                observer_lng, observer_lat = transformer_back.transform(observer_x, observer_y)
                 features.append({
                     'type': 'Feature',
                     'geometry': {
                         'type': 'Point',
-                        'coordinates': [float(obs_lng), float(obs_lat)]
+                        'coordinates': [float(observer_lng), float(observer_lat)]
                     },
                     'properties': {
                         'type': 'observer',
-                        'elevation': float(obs_height),
+                        'elevation': float(total_height),
                         'units': 'feet' if is_feet else 'meters',
                         'marker-color': '#ff0000',  # Red marker
                         'marker-size': 'medium',
                         'marker-symbol': 'camera'
                     }
                 })
-                
-                # Debug first few visible pixels if any
-                if visible > 0:
-                    visible_y, visible_x = np.where(mask)
-                    print("\nFirst 5 visible pixels:", file=sys.stderr)
-                    for i in range(min(5, len(visible_y))):
-                        px_x, px_y = visible_x[i], visible_y[i]
-                        geo_x, geo_y = viewshed.transform * (px_x, px_y)
-                        lng, lat = transformer_back.transform(geo_x, geo_y)
-                        print(f"  Pixel {i+1}: ({lng:.6f}, {lat:.6f})", file=sys.stderr)
+
                 
                 # Add visible areas
                 polygons_added = 0
@@ -170,10 +185,19 @@ def calculate_los(dsm_path, lng, lat):
         return None
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        print("Usage: python process_dsm.py <dsm_path> <longitude> <latitude>", file=sys.stderr)
+    if len(sys.argv) != 5:  # Script name + 4 arguments = 5 total
+        print("Usage: python process_dsm.py <dsm_path> <longitude> <latitude> <height_ft>", file=sys.stderr)
         sys.exit(1)
+    
+    try:
+        dsm_path = sys.argv[1]
+        longitude = float(sys.argv[2])
+        latitude = float(sys.argv[3])
+        height_ft = float(sys.argv[4])
         
-    result = calculate_los(sys.argv[1], sys.argv[2], sys.argv[3])
+        result = calculate_los(dsm_path, longitude, latitude, height_ft)
+    except ValueError as e:
+        print(f"Error: Invalid number format - {str(e)}", file=sys.stderr)
+        sys.exit(1)
     if result:
         print(json.dumps(result))
