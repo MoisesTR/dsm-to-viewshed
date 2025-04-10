@@ -1,0 +1,57 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      # Mount source code with performance optimizations
+      - .:/app:cached
+      - /app/node_modules
+      # Mount DSM files with highest performance settings
+      - ./uploads:/app/uploads:delegated,ro
+      # Use in-memory tmpfs for viewshed processing
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 2048m
+    environment:
+      - NODE_ENV=development
+      # GDAL performance optimizations
+      - GDAL_CACHEMAX=4096
+      - GDAL_NUM_THREADS=ALL_CPUS
+      - VSI_CACHE=TRUE
+      - VSI_CACHE_SIZE=536870912
+      - CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif
+      - GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR
+      # Python settings
+      - PYTHONUNBUFFERED=1
+      - RASTERIO_CACHE_SIZE=1073741824
+      # Node.js settings
+      - NODE_OPTIONS="--max-old-space-size=4096"
+    command: yarn start:dev
+    # Resource configuration for optimal performance
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '0.000'
+        reservations:
+          memory: 4G
+          cpus: '0.500'
+    # Performance tuning
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    sysctls:
+      - net.core.somaxconn=1024
+      - net.ipv4.tcp_max_syn_backlog=1024
+    # Improve container performance
+    cpu_count: 4
+    cpu_percent: 80
+    shm_size: '2gb'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

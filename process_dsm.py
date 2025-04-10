@@ -1,112 +1,179 @@
 import sys
 import json
+import numpy as np
 import rasterio
 from rasterio.features import shapes
 from pyproj import Transformer, CRS
-from subprocess import run, CalledProcessError
-import os
+from subprocess import run, CalledProcessError, PIPE
 
-def process_dsm(dsm_path, lon, lat):
-    viewshed_path = 'viewshed.tif'
-    try:
-        print(f"DEBUG: Starting process_dsm with dsm_path={dsm_path}, lon={lon}, lat={lat}", file=sys.stderr)
-        # Open DSM to get CRS and transform
-        try:
-            with rasterio.open(dsm_path) as src:
-                print("DEBUG: Successfully opened DSM file.", file=sys.stderr)
-                dsm_crs = src.crs
-                transform = src.transform
-
-                # Transform point from WGS84 to DSM CRS
-                # Note: Always provide (lon, lat) for transformation.
-                transformer = Transformer.from_crs(CRS("EPSG:4326"), dsm_crs, always_xy=True)
-                x, y = transformer.transform(float(lon), float(lat))
-                print(f"DEBUG: Transformed point to DSM CRS: ({x}, {y})", file=sys.stderr)
-
-                # Check if point is within DSM bounds
-                if not (src.bounds.left <= x <= src.bounds.right and src.bounds.bottom <= y <= src.bounds.top):
-                    print("DEBUG: Point is outside the DSM extent.", file=sys.stderr)
-                    return
-        except Exception as e:
-            print(f"ERROR: Failed to open DSM file: {e}", file=sys.stderr)
-            return
+def calculate_los(dsm_path, lng, lat):
+    """
+    Calculate line of sight from an observer point using GDAL viewshed.
+    
+    Args:
+        dsm_path: Path to the Digital Surface Model (DSM) file
+        lng: Observer longitude
+        lat: Observer latitude
         
-        # Compute viewshed using gdal_viewshed
-        cmd = f"gdal_viewshed -ox {x} -oy {y} -oz 0 -b 1 {dsm_path} {viewshed_path}"
-        print(f"DEBUG: Running command: {cmd}", file=sys.stderr)
-        try:
-            run(cmd, shell=True, check=True)
-            print("DEBUG: gdal_viewshed command executed successfully.", file=sys.stderr)
-        except CalledProcessError as e:
-            print(f"ERROR: gdal_viewshed failed with error: {e}", file=sys.stderr)
-            return
-
-        # Convert viewshed to GeoJSON
-        try:
-            with rasterio.open(viewshed_path) as viewshed_src:
-                print("DEBUG: Opened viewshed file successfully.", file=sys.stderr)
-                viewshed_data = viewshed_src.read(1)
-                print("DEBUG: Read viewshed data.", file=sys.stderr)
-                visible_shapes = shapes(viewshed_data, transform=viewshed_src.transform, mask=viewshed_data == 255)
-                print("DEBUG: Extracted shapes from viewshed data.", file=sys.stderr)
+    Returns:
+        GeoJSON FeatureCollection of visible areas
+    """
+    try:
+        # Create temporary file for viewshed output
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
+            viewshed_path = tmp.name
+        
+        # Open DSM and get observer location
+        with rasterio.open(dsm_path) as dsm:
+            # Check if DSM is in feet (US units)
+            crs_wkt = dsm.crs.to_wkt().lower()
+            is_feet = 'foot' in crs_wkt or 'ft' in crs_wkt
+            if not is_feet:
+                print("Warning: DSM might not be in US feet", file=sys.stderr)
+            
+            # Set max distance in DSM units
+            max_distance = 500    # feet radius (about 0.19 miles)
+            if not is_feet:
+                # Convert feet to meters if DSM is in meters
+                max_distance = max_distance * 0.3048
+            
+            # Convert lat/lng to DSM coordinates
+            transformer = Transformer.from_crs(CRS("EPSG:4326"), dsm.crs, always_xy=True)
+            obs_x, obs_y = transformer.transform(float(lng), float(lat))
+            
+            # Get elevation directly from DSM (already includes ground/roof height)
+            obs_height = next(dsm.sample([(obs_x, obs_y)]))[0]
+            if obs_height is None:
+                print("Error: Could not get elevation", file=sys.stderr)
+                return None
+            
+            print(f"Observer elevation from DSM: {obs_height:.1f}{'ft' if is_feet else 'm'}", file=sys.stderr)
+            
+            # Run GDAL viewshed in NORMAL mode (default)
+            # Output will be Byte type where:
+            # 0 = not visible (out of sight)
+            # 1 = visible
+            observer_offset = 6  # Negative of surface height to get to zero
+            cmd = f"gdal_viewshed -ox {obs_x} -oy {obs_y} -oz {observer_offset} -md {max_distance} {dsm_path} {viewshed_path}"
+            print(f"Running: {cmd}", file=sys.stderr)
+            
+            try:
+                run(cmd, shell=True, check=True, stderr=PIPE, text=True)
+            except CalledProcessError as e:
+                print(f"GDAL error: {e.stderr}", file=sys.stderr)
+                return None
+            
+            # Read results and convert to GeoJSON
+            with rasterio.open(viewshed_path) as viewshed:
+                data = viewshed.read(1)
                 
-                # Transform coordinates back to WGS84
-                transformer_back = Transformer.from_crs(dsm_crs, CRS("EPSG:4326"), always_xy=True)
+                # Debug viewshed values
+                unique_vals = np.unique(data)
+                print(f"Unique values in viewshed: {unique_vals}", file=sys.stderr)
+                
+                # GDAL viewshed output values:
+                # 0 = not visible (out of sight)
+                # 255 = visible from observer point
+                mask = data == 255  # Get visible areas
+                
+                # Print visibility stats
+                visible = np.sum(mask)
+                total = mask.size
+                print(f"Viewshed analysis:", file=sys.stderr)
+                print(f"- Total pixels: {total}", file=sys.stderr)
+                print(f"- Visible pixels: {visible} ({visible/total*100:.1f}%)", file=sys.stderr)
+                print(f"- Data shape: {data.shape}", file=sys.stderr)
+                print(f"- Non-zero mask values: {np.count_nonzero(mask)}", file=sys.stderr)
+                
+                # Convert visible areas to GeoJSON polygons
                 features = []
-                for shape, value in visible_shapes:
-                    if value == 255:
-                        transformed_coords = []
-                        for coord in shape['coordinates'][0]:
-                            cx, cy = transformer_back.transform(coord[0], coord[1])
-                            transformed_coords.append([cx, cy])
-                        polygon = {
-                            "type": "Feature",
-                            "geometry": {
-                                "type": "Polygon",
-                                "coordinates": [transformed_coords]
-                            },
-                            "properties": {
-                                "type": "viewshed",
-                                "visibility": "visible",
-                                "observer_height": 0  # matches -oz parameter from gdal_viewshed
-                            }
-                        }
-                        features.append(polygon)
                 
-                # (Optional) Add the observer location as a Point feature if you want to visualize it:
-                observer_feature = {
-                    "type": "Feature",
-                    "geometry": {
-                        "type": "Point",
-                        "coordinates": [float(lon), float(lat)]
+                # Add observer point as a feature
+                transformer_back = Transformer.from_crs(dsm.crs, CRS("EPSG:4326"), always_xy=True)
+                obs_lng, obs_lat = transformer_back.transform(obs_x, obs_y)
+                features.append({
+                    'type': 'Feature',
+                    'geometry': {
+                        'type': 'Point',
+                        'coordinates': [float(obs_lng), float(obs_lat)]
                     },
-                    "properties": {
-                        "name": "Observer Location"
+                    'properties': {
+                        'type': 'observer',
+                        'elevation': float(obs_height),
+                        'units': 'feet' if is_feet else 'meters',
+                        'marker-color': '#ff0000',  # Red marker
+                        'marker-size': 'medium',
+                        'marker-symbol': 'camera'
                     }
-                }
-                features.append(observer_feature)
+                })
                 
-                # Output GeoJSON to stdout
-                geojson = {
-                    "type": "FeatureCollection",
-                    "features": features
+                # Debug first few visible pixels if any
+                if visible > 0:
+                    visible_y, visible_x = np.where(mask)
+                    print("\nFirst 5 visible pixels:", file=sys.stderr)
+                    for i in range(min(5, len(visible_y))):
+                        px_x, px_y = visible_x[i], visible_y[i]
+                        geo_x, geo_y = viewshed.transform * (px_x, px_y)
+                        lng, lat = transformer_back.transform(geo_x, geo_y)
+                        print(f"  Pixel {i+1}: ({lng:.6f}, {lat:.6f})", file=sys.stderr)
+                
+                # Add visible areas
+                polygons_added = 0
+                # Note: shapes() will return 1 for True values in the mask
+                for geom, val in shapes(mask.astype('uint8'), transform=viewshed.transform):
+                    if val == 1:  # val == 1 means True in our mask (area was visible)
+                        # Transform geometry coordinates from DSM CRS to WGS84
+                        coords = geom['coordinates']
+                        transformed_coords = []
+                        
+                        for ring in coords:
+                            transformed_ring = []
+                            for point in ring:
+                                lng, lat = transformer_back.transform(point[0], point[1])
+                                transformed_ring.append([lng, lat])
+                            transformed_coords.append(transformed_ring)
+                        
+                        geom['coordinates'] = transformed_coords
+                        
+                        polygons_added += 1
+                        features.append({
+                            'type': 'Feature',
+                            'geometry': geom,
+                            'properties': {
+                                'type': 'viewshed',
+                                'visible': True,
+                                'fill': '#00ff00',  # Green fill
+                                'fill-opacity': 0.2,  # Semi-transparent
+                                'stroke': '#00ff00',  # Green border
+                                'stroke-width': 1
+                            }
+                        })
+                print(f"\nPolygons added to GeoJSON: {polygons_added}", file=sys.stderr)
+                
+                result = {
+                    'type': 'FeatureCollection',
+                    'features': features
                 }
-                print("DEBUG: GeoJSON prepared. Outputting now.", file=sys.stderr)
-                json.dump(geojson, sys.stdout)
-                sys.stdout.flush()
-        except Exception as e:
-            print(f"ERROR: Failed during viewshed processing: {e}", file=sys.stderr)
-    finally:
-        # Cleanup temporary file
-        try:
-            os.remove(viewshed_path)
-            print("DEBUG: Cleaned up temporary viewshed file.", file=sys.stderr)
-        except Exception as e:
-            print(f"WARNING: Could not remove temporary file {viewshed_path}: {e}", file=sys.stderr)
+                
+                # Cleanup temporary file
+                import os
+                try:
+                    os.unlink(viewshed_path)
+                except Exception as e:
+                    print(f"Warning: Could not delete temporary file: {e}", file=sys.stderr)
+                
+                return result
+                
+    except Exception as e:
+        print(f"Error: {str(e)}", file=sys.stderr)
+        return None
 
 if __name__ == "__main__":
     if len(sys.argv) != 4:
-        print("Usage: python process_dsm.py <dsm_path> <lon> <lat>", file=sys.stderr)
+        print("Usage: python process_dsm.py <dsm_path> <longitude> <latitude>", file=sys.stderr)
         sys.exit(1)
-    dsm_path, lon, lat = sys.argv[1], sys.argv[2], sys.argv[3]
-    process_dsm(dsm_path, lon, lat)
+        
+    result = calculate_los(sys.argv[1], sys.argv[2], sys.argv[3])
+    if result:
+        print(json.dumps(result))
