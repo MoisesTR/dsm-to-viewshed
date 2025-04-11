@@ -1,5 +1,8 @@
+import os
 import sys
 import json
+import tempfile
+
 import numpy as np
 import rasterio
 from rasterio.features import shapes
@@ -10,20 +13,28 @@ def calculate_los(dsm_path, lng, lat, equipment_height_ft, max_distance):
     """
     Calculate line of sight from an observer point using GDAL viewshed.
     
+    Key Implementation Notes:
+    - Coverage is calculated only within the circular max_distance range
+    - Uses 0.75 curvature coefficient for RF propagation modeling
+    - Handles coordinate transforms: WGS84 <-> DSM CRS
+    - Accounts for surface elevation + equipment height
+    - Returns GeoJSON with visible areas and analysis boundary
+    
     Args:
         dsm_path: Path to the Digital Surface Model (DSM) file
         lng: Observer longitude in WGS84
         lat: Observer latitude in WGS84
         equipment_height_ft: Height of equipment above ground in feet
-        
+        max_distance: Maximum analysis radius in feet
+    
     Returns:
         GeoJSON FeatureCollection containing:
-        - MultiPolygon of visible areas
-        - Point feature of observer location with elevation metadata
+        - MultiPolygon of visible areas (with lat/lng centroids)
+        - Observer point with elevation metadata
+        - Analysis range circle showing max_distance boundary
     """
     try:
         # Create temporary file for viewshed output
-        import tempfile
         with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
             viewshed_path = tmp.name
         
@@ -35,49 +46,41 @@ def calculate_los(dsm_path, lng, lat, equipment_height_ft, max_distance):
             if not is_feet:
                 print("Warning: DSM might not be in US feet", file=sys.stderr)
             
-            # Set max distance in DSM units
-            if not is_feet:
-                # Convert feet to meters if DSM is in meters
-                max_distance = max_distance * 0.3048
-            
             # Convert WGS84 lat/lng to DSM coordinate system
             transformer = Transformer.from_crs(CRS("EPSG:4326"), dsm.crs, always_xy=True)
             observer_x, observer_y = transformer.transform(float(lng), float(lat))
             
-            # Get surface elevation from DSM at observer point (includes buildings)
+             # Get surface elevation from DSM at observer point (includes buildings)
             surface_elevation = next(dsm.sample([(observer_x, observer_y)]))[0]
             if surface_elevation is None:
                 print("Error: Could not get surface elevation from DSM", file=sys.stderr)
                 return None
             
-            # Calculate total height by adding equipment height to surface elevation
-            equipment_height = equipment_height_ft
-            if not is_feet:
-                equipment_height = equipment_height * 0.3048  # Convert to meters if needed
-            
-            total_height = surface_elevation + equipment_height
-            
             print(f"Surface elevation from DSM: {surface_elevation:.1f}{'ft' if is_feet else 'm'}", file=sys.stderr)
-            print(f"Equipment height above surface: {equipment_height:.1f}{'ft' if is_feet else 'm'}", file=sys.stderr)
-            print(f"Total height for visibility: {total_height:.1f}{'ft' if is_feet else 'm'}", file=sys.stderr)
+            print(f"Equipment height above surface: {equipment_height_ft:.1f}{'ft' if is_feet else 'm'}", file=sys.stderr)
+            print(f"Observer will be at: {surface_elevation + equipment_height_ft:.1f}{'ft' if is_feet else 'm'} total", file=sys.stderr)
             
-            # GDAL viewshed parameters explanation:
-            # -ox: Observer X coordinate in the DSM's coordinate system
-            # -oy: Observer Y coordinate in the DSM's coordinate system
-            # -oz: Height above ground to calculate visibility from
-            # -md: Maximum distance to calculate visibility (in DSM units)
-            # Additional optional parameters (not used here):
-            # -vv: Vertical angle of vision in degrees (default is 180)
-            # -b: Input band to use (default is 1)
-            # -a: Algorithm (default=NORMAL):
-            #     NORMAL = Visible/Not visible binary output
-            #     INTERPOLATE = Account for earth curvature
-            #
-            # Note: We don't use -ov (observer height) as it would add extra height
-            # on top of -oz. Instead, we directly specify the desired height with -oz.
+            # Get elevation stats from the analysis area
+            window_size = int(max_distance / dsm.res[0])  # Convert distance to pixels
+            row = int((observer_y - dsm.bounds.top) / dsm.res[1])
+            col = int((observer_x - dsm.bounds.left) / dsm.res[0])
+            window = dsm.read(1,
+                window=((max(0, row - window_size), min(dsm.height, row + window_size)),
+                       (max(0, col - window_size), min(dsm.width, col + window_size))))
+            valid_elevations = window[window != dsm.nodata]
+            min_elev = float(np.min(valid_elevations))
+            max_elev = float(np.max(valid_elevations))
             
-            # Use total height for viewshed calculation
-            cmd = f"gdal_viewshed -ox {observer_x} -oy {observer_y} -oz {total_height} -md {max_distance} {dsm_path} {viewshed_path}"
+            print(f"Elevation range in analysis area: {min_elev:.1f} to {max_elev:.1f}{'ft' if is_feet else 'm'}", file=sys.stderr)
+            print(f"Observer elevation relative to surroundings: {surface_elevation - min_elev:.1f}{'ft' if is_feet else 'm'} above lowest point", file=sys.stderr)
+            
+            # Use equipment height for viewshed calculation
+            # -ox: Observer X coordinate
+            # -oy: Observer Y coordinate
+            # -oz: Observer height (equipment height)
+            # -md: Maximum distance to analyze
+            # -cc: Curvature coefficient (0.75 for radio/equipment LOS - accounts for RF refraction)
+            cmd = f"gdal_viewshed -ox {observer_x} -oy {observer_y} -oz {equipment_height_ft} -md {max_distance} -cc 0.75 {dsm_path} {viewshed_path}"
             print(f"Running: {cmd}", file=sys.stderr)
             
             try:
@@ -100,9 +103,15 @@ def calculate_los(dsm_path, lng, lat, equipment_height_ft, max_distance):
                 # 255 = visible from observer point
                 mask = data == 255  # Get visible areas
                 
-                # Calculate visibility statistics
-                visible_count = np.sum(mask)
-                total_pixels = mask.size
+                # Create a distance grid to identify pixels within max_distance
+                y, x = np.ogrid[:data.shape[0], :data.shape[1]]
+                center_y, center_x = data.shape[0] // 2, data.shape[1] // 2
+                distances = np.sqrt((x - center_x)**2 + (y - center_y)**2)
+                pixels_in_range = distances <= (max_distance / dsm.res[0])  # Convert max_distance to pixels
+                
+                # Calculate visibility statistics (only within circle)
+                visible_count = np.sum(mask & pixels_in_range)
+                total_pixels = np.sum(pixels_in_range)
                 coverage_percent = (visible_count/total_pixels*100)
                 area_width = data.shape[1] * dsm.res[0]
                 area_height = data.shape[0] * dsm.res[1]
@@ -127,7 +136,7 @@ def calculate_los(dsm_path, lng, lat, equipment_height_ft, max_distance):
                     },
                     'properties': {
                         'type': 'observer',
-                        'elevation': float(total_height),
+                        'elevation': float(surface_elevation + equipment_height_ft),
                         'units': 'feet' if is_feet else 'meters',
                         'marker-color': '#ff0000',  # Red marker
                         'marker-size': 'medium',
@@ -144,15 +153,19 @@ def calculate_los(dsm_path, lng, lat, equipment_height_ft, max_distance):
                         # Transform geometry coordinates from DSM CRS to WGS84
                         coords = geom['coordinates']
                         transformed_coords = []
-                        
                         for ring in coords:
                             transformed_ring = []
                             for point in ring:
                                 lng, lat = transformer_back.transform(point[0], point[1])
                                 transformed_ring.append([lng, lat])
                             transformed_coords.append(transformed_ring)
-                        
                         geom['coordinates'] = transformed_coords
+                        
+                        # Calculate centroid of the first ring (outer boundary)
+                        if transformed_coords and transformed_coords[0]:
+                            points = transformed_coords[0]
+                            centroid_lng = sum(p[0] for p in points) / len(points)
+                            centroid_lat = sum(p[1] for p in points) / len(points)
                         
                         polygons_added += 1
                         features.append({
@@ -161,6 +174,8 @@ def calculate_los(dsm_path, lng, lat, equipment_height_ft, max_distance):
                             'properties': {
                                 'type': 'viewshed',
                                 'visible': True,
+                                'latitude': float(centroid_lat),
+                                'longitude': float(centroid_lng),
                                 'fill': '#00ff00',  # Green fill
                                 'fill-opacity': 0.2,  # Semi-transparent
                                 'stroke': '#00ff00',  # Green border
@@ -168,14 +183,42 @@ def calculate_los(dsm_path, lng, lat, equipment_height_ft, max_distance):
                             }
                         })
                 print(f"\nPolygons added to GeoJSON: {polygons_added}", file=sys.stderr)
+
+                # Add analysis range circle using NumPy
+                num_points = 64  # Number of points to make the circle smooth
+                angles = np.linspace(0, 2 * np.pi, num_points, endpoint=True)
+                # Calculate points on circle in DSM coordinates
+                circle_x = observer_x + max_distance * np.cos(angles)
+                circle_y = observer_y + max_distance * np.sin(angles)
+                # Transform all points back to WGS84 at once
+                circle_lng, circle_lat = transformer_back.transform(circle_x, circle_y)
+                # Convert to list of [lng, lat] points
+                circle_points = [[float(lng), float(lat)] for lng, lat in zip(circle_lng, circle_lat)]
                 
+                # Add the circle as a feature
+                features.append({
+                    'type': 'Feature',
+                    'geometry': {
+                        'type': 'LineString',
+                        'coordinates': circle_points
+                    },
+                    'properties': {
+                        'type': 'analysis_range',
+                        'radius': float(max_distance),
+                        'units': 'feet' if is_feet else 'meters',
+                        'stroke': '#0000ff',  # Blue circle
+                        'stroke-width': 2,
+                        'stroke-dasharray': [5, 5],  # Dashed line
+                        'stroke-opacity': 0.8
+                    }
+                })
+
                 result = {
                     'type': 'FeatureCollection',
                     'features': features
                 }
                 
                 # Cleanup temporary file
-                import os
                 try:
                     os.unlink(viewshed_path)
                 except Exception as e:
