@@ -15,12 +15,11 @@ export class AppController {
   constructor(private readonly appService: AppService) { }
 
   @Post('viewshed')
-  async getViewshed(
+  async calculateViewshed(
     @Body() body: ViewshedRequest,
     @Res() reply: FastifyReply,
   ): Promise<void> {
     try {
-      console.log(body);
       const geojson: ViewshedResponse = await this.appService.runPythonViewshed(body);
 
       reply.send(geojson);
