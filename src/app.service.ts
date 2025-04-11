@@ -1,20 +1,13 @@
 import { Injectable, InternalServerErrorException, BadRequestException } from '@nestjs/common';
 import { spawn } from 'child_process';
 import { existsSync } from 'fs';
-import { ViewshedResponse } from './dto/viewshed.dto';
-
-export interface RunPythonViewshedParams {
-  lng: number;
-  lat: number;
-  mountHeightFt: number;
-  maxDistance?: number;
-}
+import { ViewshedRequest, ViewshedResponse } from './dto/viewshed.dto';
 
 const DSM_PATH = 'uploads/usgs_l_lasda.tif';
 const DEFAULT_MAX_DISTANCE = 500;
 @Injectable()
 export class AppService {
-  async runPythonViewshed({ lng, lat, mountHeightFt, maxDistance }: RunPythonViewshedParams): Promise<ViewshedResponse> {
+  async runPythonViewshed({ lng, lat, mountHeight, maxDistance }: ViewshedRequest): Promise<ViewshedResponse> {
     if (!existsSync(DSM_PATH)) {
       throw new BadRequestException(`DSM file not found: ${DSM_PATH}`);
     }
@@ -23,7 +16,7 @@ export class AppService {
       throw new BadRequestException('Invalid longitude or latitude values');
     }
 
-    if (!mountHeightFt) {
+    if (!mountHeight) {
       throw new BadRequestException('Mount height is required');
     }
 
@@ -37,7 +30,7 @@ export class AppService {
         DSM_PATH,
         lng.toString(),
         lat.toString(),
-        mountHeightFt.toString(),
+        mountHeight.toString(),
         maxDistance?.toString() || DEFAULT_MAX_DISTANCE.toString()
       ]);
 

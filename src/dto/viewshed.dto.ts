@@ -43,3 +43,10 @@ export interface ViewshedResponse {
   type: 'FeatureCollection';
   features: ViewshedFeature[];
 }
+
+export interface ViewshedRequest {
+  lng: number;
+  lat: number;
+  mountHeight: number;
+  maxDistance?: number;
+}

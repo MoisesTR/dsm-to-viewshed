@@ -9,13 +9,12 @@ from rasterio.features import shapes
 from pyproj import Transformer, CRS
 from subprocess import run, CalledProcessError, PIPE
 
-def calculate_los(dsm_path, lng, lat, equipment_height_ft, max_distance):
+def calculate_los(dsm_path, lng, lat, equipment_height, max_distance):
     """
     Calculate line of sight from an observer point using GDAL viewshed.
     
     Key Implementation Notes:
     - Coverage is calculated only within the circular max_distance range
-    - Uses 0.75 curvature coefficient for RF propagation modeling
     - Handles coordinate transforms: WGS84 <-> DSM CRS
     - Accounts for surface elevation + equipment height
     - Returns GeoJSON with visible areas and analysis boundary
@@ -24,8 +23,8 @@ def calculate_los(dsm_path, lng, lat, equipment_height_ft, max_distance):
         dsm_path: Path to the Digital Surface Model (DSM) file
         lng: Observer longitude in WGS84
         lat: Observer latitude in WGS84
-        equipment_height_ft: Height of equipment above ground in feet
-        max_distance: Maximum analysis radius in feet
+        equipment_height: Height of equipment above ground
+        max_distance: Maximum analysis radius
     
     Returns:
         GeoJSON FeatureCollection containing:
@@ -57,8 +56,8 @@ def calculate_los(dsm_path, lng, lat, equipment_height_ft, max_distance):
                 return None
             
             print(f"Surface elevation from DSM: {surface_elevation:.1f}{'ft' if is_feet else 'm'}", file=sys.stderr)
-            print(f"Equipment height above surface: {equipment_height_ft:.1f}{'ft' if is_feet else 'm'}", file=sys.stderr)
-            print(f"Observer will be at: {surface_elevation + equipment_height_ft:.1f}{'ft' if is_feet else 'm'} total", file=sys.stderr)
+            print(f"Equipment height above surface: {equipment_height:.1f}{'ft' if is_feet else 'm'}", file=sys.stderr)
+            print(f"Observer will be at: {surface_elevation + equipment_height:.1f}{'ft' if is_feet else 'm'} total", file=sys.stderr)
             
             # Get elevation stats from the analysis area
             window_size = int(max_distance / dsm.res[0])  # Convert distance to pixels
@@ -79,8 +78,7 @@ def calculate_los(dsm_path, lng, lat, equipment_height_ft, max_distance):
             # -oy: Observer Y coordinate
             # -oz: Observer height (equipment height)
             # -md: Maximum distance to analyze
-            # -cc: Curvature coefficient (0.75 for radio/equipment LOS - accounts for RF refraction)
-            cmd = f"gdal_viewshed -ox {observer_x} -oy {observer_y} -oz {equipment_height_ft} -md {max_distance} -cc 0.75 {dsm_path} {viewshed_path}"
+            cmd = f"gdal_viewshed -ox {observer_x} -oy {observer_y} -oz {equipment_height} -md {max_distance} {dsm_path} {viewshed_path}"
             print(f"Running: {cmd}", file=sys.stderr)
             
             try:
@@ -136,7 +134,7 @@ def calculate_los(dsm_path, lng, lat, equipment_height_ft, max_distance):
                     },
                     'properties': {
                         'type': 'observer',
-                        'elevation': float(surface_elevation + equipment_height_ft),
+                        'elevation': float(surface_elevation + equipment_height),
                         'units': 'feet' if is_feet else 'meters',
                         'marker-color': '#ff0000',  # Red marker
                         'marker-size': 'medium',

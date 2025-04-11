@@ -2,13 +2,7 @@ import { Controller, Post, Res, HttpStatus, Body } from '@nestjs/common';
 import { FastifyReply } from 'fastify';
 import { AppService } from './app.service';
 import { ViewshedResponse } from './dto/viewshed.dto';
-
-interface ViewshedRequest {
-  lng: number;
-  lat: number;
-  mountHeightFt: number;
-  maxDistance?: number;
-}
+import { ViewshedRequest } from './dto/viewshed.dto';
 
 @Controller()
 export class AppController {
