@@ -51,7 +51,7 @@ def calculate_los(dsm_path, lng, lat, equipment_height_ft, max_distance):
                 return None
             
             # Calculate total height by adding equipment height to surface elevation
-            equipment_height = float(equipment_height_ft)
+            equipment_height = equipment_height_ft
             if not is_feet:
                 equipment_height = equipment_height * 0.3048  # Convert to meters if needed
             
@@ -65,7 +65,6 @@ def calculate_los(dsm_path, lng, lat, equipment_height_ft, max_distance):
             # -ox: Observer X coordinate in the DSM's coordinate system
             # -oy: Observer Y coordinate in the DSM's coordinate system
             # -oz: Height above ground to calculate visibility from
-            #      (we use total height for visibility)
             # -md: Maximum distance to calculate visibility (in DSM units)
             # Additional optional parameters (not used here):
             # -vv: Vertical angle of vision in degrees (default is 180)
@@ -91,23 +90,28 @@ def calculate_los(dsm_path, lng, lat, equipment_height_ft, max_distance):
             with rasterio.open(viewshed_path) as viewshed:
                 data = viewshed.read(1)
                 
-                # Debug viewshed values
+                # Verify viewshed calculation worked
                 unique_vals = np.unique(data)
-                print(f"Unique values in viewshed: {unique_vals}", file=sys.stderr)
+                if not np.array_equal(unique_vals, [0, 255]):
+                    print(f"Warning: Unexpected viewshed values: {unique_vals}", file=sys.stderr)
                 
                 # GDAL viewshed output values:
                 # 0 = not visible (out of sight)
                 # 255 = visible from observer point
                 mask = data == 255  # Get visible areas
                 
-                # Print visibility stats
-                visible = np.sum(mask)
-                total = mask.size
-                print(f"Viewshed analysis:", file=sys.stderr)
-                print(f"- Total pixels: {total}", file=sys.stderr)
-                print(f"- Visible pixels: {visible} ({visible/total*100:.1f}%)", file=sys.stderr)
-                print(f"- Data shape: {data.shape}", file=sys.stderr)
-                print(f"- Non-zero mask values: {np.count_nonzero(mask)}", file=sys.stderr)
+                # Calculate visibility statistics
+                visible_count = np.sum(mask)
+                total_pixels = mask.size
+                coverage_percent = (visible_count/total_pixels*100)
+                area_width = data.shape[1] * dsm.res[0]
+                area_height = data.shape[0] * dsm.res[1]
+                units = 'feet' if is_feet else 'meters'
+                
+                print(f"\nAnalysis Results:", file=sys.stderr)
+                print(f"- Coverage Area: {area_width:.1f} x {area_height:.1f} {units}", file=sys.stderr)
+                print(f"- Grid Size: {data.shape[1]} x {data.shape[0]} pixels", file=sys.stderr)
+                print(f"- Visible Coverage: {coverage_percent:.1f}% ({visible_count:,} of {total_pixels:,} pixels)", file=sys.stderr)
                 
                 # Convert visible areas to GeoJSON polygons
                 features = []
