@@ -69,6 +69,8 @@ Same area with increased height (10 units) and doubled range (600 units) for wid
 
 Note: Green areas indicate visible terrain from the observer point. The blue circle shows the maximum analysis range.
 
+Complete example GeoJSON viewsheds can be found in this [Google Drive folder](https://drive.google.com/drive/folders/1s-aEl4hGJIFTPGVIgJfq8Bd9kVn0QPWI?usp=sharing).
+
 ## Tools and Documentation
 
 ### GDAL Viewshed
