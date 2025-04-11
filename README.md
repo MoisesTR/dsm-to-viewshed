@@ -1,63 +1,119 @@
 # DSM-to-Viewshed Service
 
-A service that processes Digital Surface Models (DSM) to produce GeoJSON viewsheds from observer points, built with NestJS and Python/GDAL. Optimized for RF/radio line-of-sight analysis with accurate coverage calculations.
+A service that processes Digital Surface Models (DSM) to produce GeoJSON viewsheds from observer points, built with NestJS and Python/GDAL. Calculates terrain-based visibility areas from a given observer point.
 
-## Architecture: Sidecar Pattern
+## Architecture
 
-This service implements the **sidecar pattern**, where our main application is augmented by a specialized helper process. Like a motorcycle sidecar, the helper process runs alongside the main application while handling a specific task better suited to different technology.
+The service implements a sidecar pattern - an architectural approach where the main application is augmented by a specialized helper process to handle specific tasks. This allows each component to use the best-suited technology for its role:
 
-In our implementation:
+* **Node.js API**: Handles HTTP requests and responses
+* **Python/GDAL Process**: Performs viewshed calculations using GDAL's native bindings
 
-* **Main Application (Node.js)**: Handles web requests and API endpoints
-* **Sidecar (Python/GDAL)**: Performs geospatial calculations on demand
+The Node.js app spawns Python processes on demand using `child_process.exec()`, passing DSM data and coordinates via command line arguments.
 
-Our Node.js application spawns Python processes using `child_process.exec()` when a viewshed calculation is needed. It passes coordinates and DSM file information via command-line arguments and receives the processed GeoJSON viewshed results via stdout.
+## API Endpoints
 
-### Sidecar Pattern Implementation
-* **Process-based approach**: Node.js spawns Python script as needed
-* **Data flow**: Parameters via CLI args, results via stdout as GeoJSON
-* **Key advantage**: Uses GDAL's built-in `gdal_viewshed` tool without complex custom algorithms
-* **Deployment**: Single container with both Node.js and Python+GDAL installed
+### Calculate Viewshed
 
-## Development with Docker
+`POST /viewshed`
 
-### Prerequisites
-- Docker Desktop
-
-### Start Development
-```bash
-# Start the service
-$ docker compose up
-
-# Stop the service
-$ docker compose down
+**Request Body:**
+```typescript
+{
+  lng: number;        // Observer longitude in WGS84
+  lat: number;        // Observer latitude in WGS84
+  mountHeight: number;  // Equipment height (added to surface elevation)
+  maxDistance?: number;   // Optional: Maximum analysis radius, default is 500
+}
 ```
 
-The service will be available at http://localhost:3000
+GDAL will add mountHeight to the surface elevation at the observer point. Examples:
 
-### What's Included
-- Node.js 20 for the web service
-- Python 3 with GDAL for geospatial processing
-- Hot reload enabled (changes are reflected automatically)
+- Ground point: If terrain is 100ft and mountHeight is 30ft → viewshed from 130ft
+- Rooftop point: If terrain+building is 140ft and mountHeight is 10ft → viewshed from 150ft
 
-## Viewshed Analysis Features
+Note: The DSM includes terrain and building heights, so mountHeight is always added to whatever is there (ground or roof).
 
-### RF Propagation Modeling
-- Uses 0.75 curvature coefficient for standard RF refraction
-- Accounts for earth's curvature in long-range calculations
-- Coverage calculated within circular analysis boundary
+**Unit Handling:**
+The service adapts to the DSM's coordinate system:
+- If DSM is in US feet: all calculations and responses use feet
+- If DSM is in meters: all calculations and responses use meters
 
-### Elevation Handling
-- Supports DSMs in feet (US) or meters
-- Combines surface elevation with equipment height
-- Reports min/max elevations in analysis area
+This affects elevation values, analysis radius, and coverage calculations.
 
-### GeoJSON Output
-- Visible areas with lat/lng centroids
+**Response:** GeoJSON FeatureCollection containing:
+- Visible area polygons
 - Observer point with elevation metadata
-- Analysis range boundary circle
-- Coverage statistics within max range
+- Analysis range circle
 
-## Deployment
-- **Local**: Uses Docker Compose
-- **Production**: Single container with Node.js and Python+GDAL
+**Example Response:**
+```typescript
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [-105.123, 40.456] },
+      "properties": {
+        "type": "observer",
+        "elevation": 1514.5992431640625,
+        "units": "feet",
+        "marker-color": "#ff0000",
+        "marker-size": "medium",
+        "marker-symbol": "camera"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Polygon", "coordinates": [[...]] },
+      "properties": {
+        "type": "viewshed",
+        "visible": true,
+        "latitude": 40.457,
+        "longitude": -105.124,
+        "fill": "#00ff00",
+        "fill-opacity": 0.2,
+        "stroke": "#00ff00",
+        "stroke-width": 1
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[...]]
+      },
+      "properties": {
+        "type": "analysis_range",
+        "radius": 500,
+        "units": "feet",
+        "stroke": "#0000ff",
+        "stroke-width": 2,
+        "stroke-dasharray": [5, 5],
+        "stroke-opacity": 0.8
+      }
+    }
+  ]
+}
+```
+
+## Development
+
+### DSM Files
+In this implementation:
+- DSM files are read from the `uploads/` directory
+- File upload is not implemented in this version due to large file sizes
+- To test with different DSM files:
+  1. Add the file to `uploads/`
+  2. Update DSM_PATH in app.service.ts
+
+### Commands
+```bash
+# Start service
+$ docker compose up
+
+# Rebuild and start
+$ docker compose up --build
+```
+
+Service runs at http://localhost:3000
