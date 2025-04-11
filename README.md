@@ -22,15 +22,22 @@ The Node.js app spawns Python processes on demand using `child_process.exec()`, 
 {
   lng: number;        // Observer longitude in WGS84
   lat: number;        // Observer latitude in WGS84
-  mountHeight: number;  // Equipment height (added to surface elevation)
+  mountHeight: number;  // Equipment height (e.g., pole, tower, etc)
   maxDistance?: number;   // Optional: Maximum analysis radius, default is 500
 }
 ```
 
-GDAL will add mountHeight to the surface elevation at the observer point. Examples:
+The mountHeight is added to whatever elevation exists at the observer point. Examples:
 
-- Ground point: If terrain is 100ft and mountHeight is 30ft → viewshed from 130ft
-- Rooftop point: If terrain+building is 140ft and mountHeight is 10ft → viewshed from 150ft
+- Ground point:
+  * Ground elevation: 100
+  * mountHeight: 30 (e.g., pole, tower, etc)
+  * Total height for viewshed: 130
+
+- Rooftop point:
+  * Ground + building elevation: 140
+  * mountHeight: 10 (e.g., device height)
+  * Total height for viewshed: 150
 
 Note: The DSM includes terrain and building heights, so mountHeight is always added to whatever is there (ground or roof).
 
