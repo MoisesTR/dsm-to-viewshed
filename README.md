@@ -41,6 +41,42 @@ The mountHeight is added to whatever elevation exists at the observer point. Exa
 
 Note: The DSM includes terrain and building heights, so mountHeight is always added to whatever is there (ground or roof).
 
+## Example Results
+
+### Example 1: Short Range Analysis
+```json
+{
+    "lat": 41.198963169072435,
+    "lng": -96.21405728188392,
+    "mountHeight": 5,
+    "maxDistance": 300
+}
+```
+Analysis of a rooftop device in Omaha, NE with 5-unit height and 300-unit range.
+![Short Range Viewshed Analysis](./images/first-example.png)
+
+### Example 2: Extended Range Analysis
+```json
+{
+    "lat": 41.199590197202134,
+    "lng": -96.21268509010174,
+    "mountHeight": 10,
+    "maxDistance": 600
+}
+```
+Same area with increased height (10 units) and doubled range (600 units) for wider coverage.
+![Extended Range Viewshed Analysis](./images/second-example.png)
+
+Note: Green areas indicate visible terrain from the observer point. The blue circle shows the maximum analysis range.
+
+## Tools and Documentation
+
+### GDAL Viewshed
+This service uses GDAL's viewshed analysis. For detailed information about the algorithm and parameters, see the [GDAL Viewshed Documentation](https://gdal.org/programs/gdal_viewshed.html).
+
+### Visualizing Results
+You can visualize the GeoJSON response using [geojson.io](https://geojson.io/#map=2/0/20), a helpful tool for inspecting and validating GeoJSON data on a map.
+
 **Unit Handling:**
 The service adapts to the DSM's coordinate system:
 - If DSM is in US feet: all calculations and responses use feet
